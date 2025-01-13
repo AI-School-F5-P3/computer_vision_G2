@@ -1,0 +1,11 @@
+streamlit>=1.8.0
+torch>=1.9.0
+torchvision>=0.10.0
+opencv-python>=4.5.3
+numpy>=1.19.5
+Pillow>=8.3.1
+requests>=2.26.0
+tqdm>=4.62.2
+matplotlib>=3.4.3
+beautifulsoup4>=4.9.3
+selenium>=3.141.0
