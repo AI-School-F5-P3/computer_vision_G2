@@ -4,66 +4,18 @@ import cv2
 import numpy as np
 from pathlib import Path
 import logging
-from ultralytics import YOLO
+import sys
 import os
+
+# Get the project root directory (one level up from this file)
+current_dir = Path(__file__).parent.parent
+sys.path.append(str(current_dir))
+
+from src.training.train_model import train_model
+from src.inference.detect_logos import LogoDetector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-class LogoDetector:
-    def __init__(self, model_path=None):
-        """Initialize YOLO model"""
-        if model_path and os.path.exists(model_path):
-            self.model = YOLO(model_path)
-        else:
-            # If no model exists, create a new one from YOLO base model
-            self.model = YOLO('yolov8n.pt')
-    
-    def train(self, data_path: str, epochs: int = 100):
-        """Train the model"""
-        # Create dataset config
-        dataset_config = {
-            'path': data_path,
-            'train': os.path.join(data_path, 'train/images'),
-            'val': os.path.join(data_path, 'val/images'),
-            'test': os.path.join(data_path, 'test/images'),
-            'names': {0: 'nike_logo'}
-        }
-        
-        # Save dataset config
-        config_path = os.path.join(data_path, 'dataset.yaml')
-        with open(config_path, 'w') as f:
-            import yaml
-            yaml.dump(dataset_config, f)
-        
-        # Train
-        self.model.train(
-            data=config_path,
-            epochs=epochs,
-            imgsz=640,
-            batch=16,
-            name='nike_detector_yolo'
-        )
-        
-        # Save model
-        output_path = 'models/trained'
-        os.makedirs(output_path, exist_ok=True)
-        self.model.save(os.path.join(output_path, 'nike_detector.pt'))
-
-    def detect(self, image: Image.Image, conf_threshold: float = 0.25) -> tuple:
-        """Detect logos in image"""
-        results = self.model(image, conf=conf_threshold)
-        
-        boxes = []
-        scores = []
-        labels = []
-        
-        for r in results:
-            boxes.extend(r.boxes.xyxy.cpu().numpy())
-            scores.extend(r.boxes.conf.cpu().numpy())
-            labels.extend(r.boxes.cls.cpu().numpy())
-            
-        return np.array(boxes), np.array(scores), np.array(labels)
 
 def main():
     st.set_page_config(page_title="Nike Logo Detector", layout="wide")
@@ -74,11 +26,14 @@ def main():
     st.sidebar.header("Configuration")
     page = st.sidebar.radio("Select Page", ["Train Model", "Detect Logos"])
     
+    # Get project root directory
+    project_root = Path(__file__).parent.parent
+    
     # Initialize detector
     @st.cache_resource
     def load_detector():
-        model_path = "models/trained/nike_detector.pt"
-        return LogoDetector(model_path)
+        model_path = project_root / "models" / "trained" / "nike_detector.pt"
+        return LogoDetector(model_path if model_path.exists() else None)
     
     try:
         detector = load_detector()
@@ -89,15 +44,48 @@ def main():
     if page == "Train Model":
         st.header("Train Model")
         
+        # Check if data directory exists and has required structure
+        data_path = project_root / 'data'
+        if not data_path.exists():
+            st.error(f"Data directory not found at {data_path}")
+            return
+            
+        required_dirs = ['train/images', 'valid/images', 'test/images']
+        missing_dirs = []
+        for dir_path in required_dirs:
+            if not (data_path / dir_path).exists():
+                missing_dirs.append(dir_path)
+                
+        if missing_dirs:
+            st.error(f"Missing required directories: {', '.join(missing_dirs)}")
+            st.write("Please ensure your data directory has the following structure:")
+            st.code("""
+data/
+├── train/
+│   └── images/
+├── valid/
+│   └── images/
+└── test/
+    └── images/
+            """)
+            return
+        
         # Training parameters
-        epochs = st.number_input("Number of Epochs", min_value=1, value=100)
+        epochs = st.number_input("Number of Epochs", min_value=1, value=10)
+        batch_size = st.number_input("Batch Size", min_value=1, value=16)
         
         # Training button
         if st.button("Start Training"):
             try:
                 with st.spinner("Training model... This may take a while."):
-                    detector.train('data', epochs=epochs)
-                st.success("Training completed! Model saved in models/trained/nike_detector.pt")
+                    model_path = train_model(
+                        data_path='data',  # Use relative path
+                        num_epochs=epochs,
+                        batch_size=batch_size
+                    )
+                st.success(f"Training completed! Model saved at {model_path}")
+                # Reload the detector with new model
+                detector = load_detector()
             except Exception as e:
                 st.error(f"Training error: {str(e)}")
                 logger.error(f"Training error: {str(e)}", exc_info=True)
