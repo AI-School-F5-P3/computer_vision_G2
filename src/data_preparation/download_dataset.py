@@ -1,5 +1,4 @@
-#download_dataset.py
-
+# data_preparation/download_dataset.py
 import os
 import requests
 import zipfile

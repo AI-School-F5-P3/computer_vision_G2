@@ -1,5 +1,4 @@
-#process_data.py
-
+# data_preparation/process_data.py
 import cv2
 import os
 from pathlib import Path

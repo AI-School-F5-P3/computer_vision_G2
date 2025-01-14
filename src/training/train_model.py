@@ -1,5 +1,4 @@
-#train_model.py
-
+# training/train_model.py
 import torch
 from torch.utils.data import DataLoader
 import torchvision
