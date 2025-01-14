@@ -1,40 +1,45 @@
-# inference/detect_logos.py
+# src/inference/detect_logos.py
 import torch
 import cv2
 import numpy as np
 from pathlib import Path
 import logging
+from torchvision.transforms import functional as F
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def load_model(model_path, num_classes=2):
+    """
+    Carga el modelo entrenado
+    """
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=False, num_classes=num_classes)
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
+    return model
+
 def detect_logos(image_path: str, model_path: str, confidence_threshold: float = 0.5):
     """
     Detecta logos en una imagen
-    Args:
-        image_path: Ruta a la imagen
-        model_path: Ruta al modelo entrenado
-        confidence_threshold: Umbral de confianza para detecciones
-    Returns:
-        List de detecciones (boxes, scores, labels)
     """
     # Cargar modelo
-    model = torch.load(model_path)
-    model.eval()
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = load_model(model_path)
+    model.to(device)
     
     # Preprocesar imagen
     image = cv2.imread(image_path)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
+    image_tensor = F.to_tensor(image)
     
     # Inferencia
     with torch.no_grad():
-        predictions = model([image_tensor])
+        prediction = model([image_tensor.to(device)])
     
     # Procesar predicciones
-    boxes = predictions[0]['boxes'].cpu().numpy()
-    scores = predictions[0]['scores'].cpu().numpy()
-    labels = predictions[0]['labels'].cpu().numpy()
+    boxes = prediction[0]['boxes'].cpu().numpy()
+    scores = prediction[0]['scores'].cpu().numpy()
+    labels = prediction[0]['labels'].cpu().numpy()
     
     # Filtrar por confianza
     mask = scores > confidence_threshold
