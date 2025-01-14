@@ -1,74 +1,74 @@
 # src/training/train_model.py
-import torch
-from torch.utils.data import DataLoader
-import torchvision
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from ..data_preparation.dataset import LogoDataset
+from ultralytics import YOLO
+import os
 import logging
 from pathlib import Path
+import yaml
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_model(num_classes):
+def train_model(data_path: str, num_epochs: int = 100, batch_size: int = 16):
     """
-    Obtiene modelo pre-entrenado y modifica la capa final
-    """
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-    return model
-
-def train_model(data_path, num_epochs=10, batch_size=2):
-    """
-    Entrena el modelo usando el dataset proporcionado
+    Train YOLO model on Nike logo dataset
     Args:
-        data_path: Ruta al dataset (conteniendo carpetas train, test, valid)
-        num_epochs: Número de épocas de entrenamiento
-        batch_size: Tamaño del batch
+        data_path: Path to dataset directory
+        num_epochs: Number of training epochs
+        batch_size: Batch size for training
     """
-    # Preparar datasets
-    train_dataset = LogoDataset(data_path, split='train')
-    val_dataset = LogoDataset(data_path, split='valid')
+    # Convert to Path object for easier path manipulation
+    data_path = Path(data_path)
     
-    # Preparar dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda x: tuple(zip(*x)))
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=lambda x: tuple(zip(*x)))
+    # Create dataset config
+    dataset_config = {
+        'path': str(data_path.absolute()),  # Use absolute path
+        'train': str((data_path / 'train' / 'images').absolute()),
+        'val': str((data_path / 'valid' / 'images').absolute()),  # Note: using 'valid' instead of 'val'
+        'test': str((data_path / 'test' / 'images').absolute()),
+        'names': {0: 'nike_logo'},
+        'nc': 1  # number of classes
+    }
     
-    # Preparar modelo
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = get_model(num_classes=2)  # Background + Logo
-    model.to(device)
+    # Create directory for config if it doesn't exist
+    config_dir = Path('models/config')
+    config_dir.mkdir(parents=True, exist_ok=True)
     
-    # Optimizador
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
+    # Save dataset config
+    config_path = config_dir / 'dataset.yaml'
+    with open(config_path, 'w') as f:
+        yaml.safe_dump(dataset_config, f, sort_keys=False)
     
-    # Entrenamiento
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
+    logger.info(f"Created dataset config at {config_path}")
+    logger.info(f"Training data path: {dataset_config['train']}")
+    logger.info(f"Validation data path: {dataset_config['val']}")
+    logger.info(f"Test data path: {dataset_config['test']}")
+    
+    # Initialize model
+    model = YOLO('yolov8n.pt')
+    
+    # Create output directory if it doesn't exist
+    output_path = Path('models/trained')
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Train model
+    logger.info("Starting training...")
+    try:
+        model.train(
+            data=str(config_path),
+            epochs=num_epochs,
+            imgsz=640,
+            batch=batch_size,
+            name='nike_detector_yolo',
+            project=str(output_path),
+            exist_ok=True
+        )
         
-        for images, targets in train_loader:
-            images = [image.to(device) for image in images]
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            
-            optimizer.zero_grad()
-            losses.backward()
-            optimizer.step()
-            
-            total_loss += losses.item()
-            
-        # Log progress
-        logger.info(f'Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader)}')
+        # Save model
+        final_model_path = output_path / 'nike_detector.pt'
+        model.save(str(final_model_path))
+        logger.info(f"Model saved to {final_model_path}")
         
-        # Guardar modelo
-        if (epoch + 1) % 5 == 0:
-            save_path = Path('models/trained')
-            save_path.mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), save_path / f'logo_detector_epoch_{epoch+1}.pth')
-    
-    return model
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        raise e
+
+    return str(final_model_path)

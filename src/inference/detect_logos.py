@@ -1,50 +1,40 @@
 # src/inference/detect_logos.py
-import torch
-import cv2
+from ultralytics import YOLO
 import numpy as np
-from pathlib import Path
+from PIL import Image
+import os
 import logging
-from torchvision.transforms import functional as F
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_model(model_path, num_classes=2):
-    """
-    Carga el modelo entrenado
-    """
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=False, num_classes=num_classes)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
-    return model
+class LogoDetector:
+    def __init__(self, model_path=None):
+        """Initialize YOLO model"""
+        if model_path and os.path.exists(model_path):
+            self.model = YOLO(model_path)
+        else:
+            # If no model exists, create a new one from YOLO base model
+            self.model = YOLO('yolov8n.pt')
+            logger.warning("No model found, initialized with base YOLO model")
 
-def detect_logos(image_path: str, model_path: str, confidence_threshold: float = 0.5):
-    """
-    Detecta logos en una imagen
-    """
-    # Cargar modelo
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = load_model(model_path)
-    model.to(device)
-    
-    # Preprocesar imagen
-    image = cv2.imread(image_path)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image_tensor = F.to_tensor(image)
-    
-    # Inferencia
-    with torch.no_grad():
-        prediction = model([image_tensor.to(device)])
-    
-    # Procesar predicciones
-    boxes = prediction[0]['boxes'].cpu().numpy()
-    scores = prediction[0]['scores'].cpu().numpy()
-    labels = prediction[0]['labels'].cpu().numpy()
-    
-    # Filtrar por confianza
-    mask = scores > confidence_threshold
-    boxes = boxes[mask]
-    scores = scores[mask]
-    labels = labels[mask]
-    
-    return boxes, scores, labels
+    def detect(self, image: Image.Image, conf_threshold: float = 0.25) -> tuple:
+        """
+        Detect logos in image
+        Args:
+            image: PIL Image
+            conf_threshold: Confidence threshold
+        Returns:
+            tuple: (boxes, scores, labels)
+        """
+        results = self.model(image, conf=conf_threshold)
+        
+        boxes = []
+        scores = []
+        labels = []
+        
+        for r in results:
+            boxes.extend(r.boxes.xyxy.cpu().numpy())
+            scores.extend(r.boxes.conf.cpu().numpy())
+            labels.extend(r.boxes.cls.cpu().numpy())
+            
+        return np.array(boxes), np.array(scores), np.array(labels)
