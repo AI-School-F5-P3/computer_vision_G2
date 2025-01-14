@@ -1,5 +1,4 @@
-#detect_logos.py
-
+# inference/detect_logos.py
 import torch
 import cv2
 import numpy as np
