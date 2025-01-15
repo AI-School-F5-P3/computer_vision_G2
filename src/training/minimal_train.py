@@ -49,31 +49,35 @@ def train_minimal():
         print("4. Iniciando entrenamiento...", flush=True)
         model.train(
         data=str(yaml_path),
-        epochs=10,
-        imgsz=416,
-        batch=4,
-        device=device,  
+        epochs=30,              # Aumentado a 30 épocas
+        imgsz=640,             # Volvemos a 640 para mejor detección
+        batch=8,               # Aumentado pero manteniendo estabilidad
+        device=device,
         cache=False,
-        workers=0,
-        amp=False,      # Desactivamos AMP
+        workers=2,             # Añadimos algunos workers ya que la GPU funciona
+        amp=False,             # Mantenemos AMP desactivado
         plots=True,
         save=True,
         optimizer='AdamW',
-        lr0=0.001,
-        momentum=0.9,
+        lr0=0.001,            # Learning rate inicial
+        lrf=0.0001,           # Learning rate final
+        momentum=0.937,        # Momentum ajustado
         weight_decay=0.0005,
-        warmup_epochs=1,
+        warmup_epochs=3,       # Más épocas de warmup
         verbose=True,
         single_cls=True,
         deterministic=True,
         seed=42,
-        mosaic=0.0,
-        degrees=0.0,
-        translate=0.1,
+        mosaic=0.5,           # Activamos mosaic parcialmente
+        degrees=10.0,         # Añadimos algo de rotación
+        translate=0.2,        # Más traducción
         scale=0.5,
         fliplr=0.5,
-        patience=0
-        )
+        patience=5,           # Early stopping si no hay mejora
+        cos_lr=True,          # Learning rate con curva coseno
+        close_mosaic=10,      # Desactivar mosaic en las últimas épocas
+        overlap_mask=False    # Mantener simple
+    )
         
         print("5. Entrenamiento completado", flush=True)
         

@@ -51,22 +51,22 @@ class LogoDetector:
     def detect(self, image: Image.Image, conf_threshold: float = 0.25) -> tuple:
         """
         Detect logos in image
-        Args:
-            image: PIL Image
-            conf_threshold: Confidence threshold
-        Returns:
-            tuple: (boxes, scores, labels)
         """
         # Guardar dimensiones originales
         original_width, original_height = image.size
+        target_size = (640, 640)
         
-        # Preprocesar
+        # Calcular el ratio y padding
+        ratio = min(target_size[0] / original_width, target_size[1] / original_height)
+        new_width = int(original_width * ratio)
+        new_height = int(original_height * ratio)
+        
+        # Calcular padding
+        pad_x = (target_size[0] - new_width) // 2
+        pad_y = (target_size[1] - new_height) // 2
+        
+        # Preprocesar imagen
         preprocessed_img = self.preprocess_image(image)
-        preprocessed_width, preprocessed_height = preprocessed_img.size
-        
-        # Calcular ratios de escala
-        width_ratio = original_width / preprocessed_width
-        height_ratio = original_height / preprocessed_height
         
         # Realizar detección
         results = self.model(preprocessed_img, conf=conf_threshold)
@@ -76,31 +76,30 @@ class LogoDetector:
         labels = []
         
         for r in results:
-            # Obtener cajas en coordenadas de imagen preprocesada
             detected_boxes = r.boxes.xyxy.cpu().numpy()
             
-            # Ajustar cada caja a las dimensiones originales
             for box in detected_boxes:
-                # Desescalar las coordenadas
-                x1 = box[0] * width_ratio
-                y1 = box[1] * height_ratio
-                x2 = box[2] * width_ratio
-                y2 = box[3] * height_ratio
+                # Restar el padding
+                x1 = box[0] - pad_x
+                y1 = box[1] - pad_y
+                x2 = box[2] - pad_x
+                y2 = box[3] - pad_y
                 
-                # Asegurar que las coordenadas están dentro de la imagen
-                x1 = max(0, min(x1, original_width))
-                x2 = max(0, min(x2, original_width))
-                y1 = max(0, min(y1, original_height))
-                y2 = max(0, min(y2, original_height))
+                # Convertir a coordenadas de la imagen original
+                x1 = max(0, min(x1 / ratio, original_width))
+                x2 = max(0, min(x2 / ratio, original_width))
+                y1 = max(0, min(y1 / ratio, original_height))
+                y2 = max(0, min(y2 / ratio, original_height))
                 
                 boxes.append([x1, y1, x2, y2])
-                
+            
             scores.extend(r.boxes.conf.cpu().numpy())
             labels.extend(r.boxes.cls.cpu().numpy())
         
-        print(f"Original size: {image.size}")
-        print(f"Preprocessed size: {preprocessed_img.size}")
-        print(f"Scale ratios: width={width_ratio}, height={height_ratio}")
-        print("Adjusted boxes:", boxes)
-            
+        # Debug info
+        print(f"Original size: {original_width}x{original_height}")
+        print(f"Padding: x={pad_x}, y={pad_y}")
+        print(f"Scale ratio: {ratio}")
+        print("Boxes:", boxes)
+        
         return np.array(boxes), np.array(scores), np.array(labels)
