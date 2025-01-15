@@ -49,31 +49,34 @@ def train_model():
         print("4. Iniciando entrenamiento...", flush=True)
         model.train(
         data=str(yaml_path),
-        epochs=10,
-        imgsz=416,
-        batch=4,
-        device=device,  
+        epochs=50,              # Más épocas
+        imgsz=640,             
+        batch=8,               
+        device=device,
         cache=False,
-        workers=0,
-        amp=False,      # Desactivamos AMP
+        workers=2,             
+        amp=False,             
         plots=True,
         save=True,
         optimizer='AdamW',
-        lr0=0.001,
-        momentum=0.9,
-        weight_decay=0.0005,
-        warmup_epochs=1,
+        lr0=0.0005,           # Learning rate más bajo para mantener precisión
+        lrf=0.00001,          # Learning rate final más bajo
+        momentum=0.937,        
+        weight_decay=0.001,    # Más regularización
+        warmup_epochs=5,       # Más warmup
         verbose=True,
         single_cls=True,
         deterministic=True,
         seed=42,
-        mosaic=0.0,
-        degrees=0.0,
-        translate=0.1,
+        mosaic=0.3,           # Menos mosaic
+        degrees=5.0,          # Menos rotación
+        translate=0.1,        # Menos traducción
         scale=0.5,
         fliplr=0.5,
-        patience=0
-        )
+        patience=10,          # Más paciencia
+        cos_lr=True,          
+        close_mosaic=15       # Cerrar mosaic más tarde
+    )
         
         print("5. Entrenamiento completado", flush=True)
         

@@ -32,7 +32,7 @@ def main():
     # Initialize detector
     @st.cache_resource
     def load_detector():
-        model_path = project_root / "models" / "trained" / "nike_detector.pt"
+        model_path = project_root / "runs" / "detect" / "train7" / "weights" / "best.pt"
         return LogoDetector(model_path if model_path.exists() else None)
     
     try:
@@ -103,7 +103,7 @@ data/
         
         uploaded_file = st.file_uploader(
             "Choose an image file", 
-            type=['png', 'jpg', 'jpeg']
+            type=['png', 'jpg', 'jpeg', 'webp', 'jfif']
         )
         
         if uploaded_file is not None:
@@ -111,6 +111,11 @@ data/
                 # Display original image
                 image = Image.open(uploaded_file)
                 st.image(image, caption="Uploaded Image", use_column_width=True)
+                
+                # Opción para ver imagen preprocesada
+                if st.checkbox("Show preprocessed image"):
+                    preprocessed = detector.preprocess_image(image)
+                    st.image(preprocessed, caption="Preprocessed Image", use_column_width=True)
                 
                 if st.button("Detect Logos"):
                     with st.spinner("Performing detection..."):
@@ -126,8 +131,8 @@ data/
                                 x1, y1, x2, y2 = map(int, box)
                                 cv2.rectangle(img_array, (x1, y1), (x2, y2), (0, 255, 0), 2)
                                 cv2.putText(img_array, f'Nike: {score:.2f}', 
-                                          (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                                          0.9, (0, 255, 0), 2)
+                                        (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
+                                        0.9, (0, 255, 0), 2)
                             
                             st.image(img_array, caption="Detection Results", use_column_width=True)
                             
@@ -137,7 +142,7 @@ data/
                                 st.write(f"Detection {i}: Confidence = {score:.2%}")
                         else:
                             st.info("No Nike logos detected in the image.")
-            
+                    
             except Exception as e:
                 st.error(f"Error processing image: {str(e)}")
                 logger.error(f"Processing error: {str(e)}", exc_info=True)
