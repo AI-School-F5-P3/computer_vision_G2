@@ -3,34 +3,42 @@ from ultralytics import YOLO
 import logging
 from pathlib import Path
 import yaml
+import sys
+import traceback
 
+# Configurar logging más detallado
+logging.basicConfig(
+    level=logging.DEBUG,  # Cambiar a DEBUG para más detalles
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('training_debug.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
-def train_model(data_path: str, num_epochs: int = 100, batch_size: int = 16):
+def train_model(data_path: str, num_epochs: int = 50, batch_size: int = 8):
     """
-    Train YOLO model on Nike logo dataset
-    Args:
-        data_path: Path to dataset directory
-        num_epochs: Number of training epochs
-        batch_size: Batch size for training
+    Train YOLO model with detailed error tracking
     """
     try:
-        # Get project root and verify paths
+        logger.info("Iniciando proceso de entrenamiento...")
         project_root = Path(__file__).resolve().parent.parent.parent
         data_path = project_root / data_path
         
-        # Verify data structure
-        train_images = list((data_path / 'train' / 'images').glob('*.jpg'))
-        train_labels = list((data_path / 'train' / 'labels').glob('*.txt'))
-        
-        if not train_images:
-            raise FileNotFoundError("No training images found!")
-        if not train_labels:
-            raise FileNotFoundError("No training labels found!")
-            
-        logger.info(f"Found {len(train_images)} training images and {len(train_labels)} labels")
-        
-        # Create simple dataset config
+        # Verificar memoria disponible
+        logger.info("Verificando recursos del sistema...")
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            logger.info(f"Memoria total: {mem.total / (1024**3):.2f} GB")
+            logger.info(f"Memoria disponible: {mem.available / (1024**3):.2f} GB")
+            logger.info(f"Memoria en uso: {mem.percent}%")
+        except ImportError:
+            logger.warning("No se pudo importar psutil para verificar memoria")
+
+        # Configuración del dataset
+        logger.info("Creando configuración del dataset...")
         dataset_config = {
             'path': str(data_path),
             'train': str(data_path / 'train' / 'images'),
@@ -39,32 +47,92 @@ def train_model(data_path: str, num_epochs: int = 100, batch_size: int = 16):
             'names': {0: 'nike_logo'},
             'nc': 1
         }
-        
-        # Save config
+
         config_path = data_path / 'dataset.yaml'
         with open(config_path, 'w') as f:
             yaml.safe_dump(dataset_config, f, sort_keys=False)
-        
-        # Initialize and train model
-        model = YOLO('yolov8n.pt')
-        
-        results = model.train(
+        logger.info(f"Configuración guardada en {config_path}")
+
+        # Inicializar modelo con try/except específico
+        logger.info("Inicializando modelo...")
+        try:
+            model = YOLO('yolov8n.pt')
+        except Exception as e:
+            logger.error(f"Error al inicializar modelo: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+        # Configurar parámetros de entrenamiento
+        logger.info("Configurando parámetros de entrenamiento...")
+        train_args = dict(
             data=str(config_path),
             epochs=num_epochs,
             imgsz=640,
             batch=batch_size,
+            patience=20,
+            device='cpu',
+            cache='disk',
             name='nike_detector_yolo',
             project=str(project_root / 'models' / 'trained'),
-            exist_ok=True
+            exist_ok=True,
+            pretrained=True,
+            verbose=True,
+            single_cls=True,
+            rect=False,
+            resume=False,
+            optimizer='SGD',
+            lr0=0.01,
+            lrf=0.01,
+            momentum=0.937,
+            weight_decay=0.0005,
+            warmup_epochs=3.0,
+            warmup_momentum=0.8,
+            warmup_bias_lr=0.1,
+            box=7.5,
+            cls=0.5,
+            dfl=1.5,
+            plots=True,
+            save=True,
+            save_period=5,
+            workers=4
         )
-        
-        # Save final model
+
+        # Iniciar entrenamiento con manejo de excepciones específico
+        logger.info("Iniciando entrenamiento...")
+        try:
+            results = model.train(**train_args)
+            logger.info("Entrenamiento completado exitosamente")
+        except KeyboardInterrupt:
+            logger.info("Entrenamiento interrumpido por el usuario")
+            raise
+        except Exception as e:
+            logger.error(f"Error durante el entrenamiento: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+        # Guardar modelo
+        logger.info("Guardando modelo final...")
         final_model_path = project_root / 'models' / 'trained' / 'nike_detector.pt'
-        model.save(str(final_model_path))
-        logger.info(f"Model saved to {final_model_path}")
-        
+        try:
+            model.save(str(final_model_path))
+            logger.info(f"Modelo guardado en {final_model_path}")
+        except Exception as e:
+            logger.error(f"Error al guardar el modelo: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
         return str(final_model_path)
-        
+
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
+        logger.error(f"Error general en el proceso: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
+
+if __name__ == "__main__":
+    try:
+        logger.info("Iniciando script de entrenamiento...")
+        model_path = train_model('data', num_epochs=50, batch_size=8)
+        logger.info(f"Proceso completado. Modelo guardado en: {model_path}")
+    except Exception as e:
+        logger.error(f"Error en el script principal: {str(e)}")
+        logger.error(traceback.format_exc())
