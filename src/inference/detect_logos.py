@@ -43,10 +43,7 @@ class LogoDetector:
         Returns:
             dict: Statistics about logo appearances
         """
-        # Abrir video
         cap = cv2.VideoCapture(video_path)
-        
-        # Obtener propiedades del video
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps
@@ -54,63 +51,89 @@ class LogoDetector:
         # Variables para seguimiento
         frame_count = 0
         logo_frames = 0
-        logo_appearances = []
-        current_appearance = None
+        frame_detections = []  # Guardamos las detecciones de cada frame
         
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
                 
-            # Convertir frame a RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame_pil = Image.fromarray(frame_rgb)
             
             # Detectar logos
             boxes, scores, labels = self.detect(frame_pil, conf_threshold)
             
-            # Procesar detecciones
+            # Guardar información del frame
             if len(boxes) > 0:
-                if current_appearance is None:
-                    current_appearance = {
-                        'start_frame': frame_count,
-                        'start_time': frame_count / fps,
-                        'detections': len(boxes)
-                    }
                 logo_frames += 1
-            else:
-                if current_appearance is not None:
-                    current_appearance['end_frame'] = frame_count - 1
-                    current_appearance['end_time'] = (frame_count - 1) / fps
-                    current_appearance['duration'] = (
-                        current_appearance['end_frame'] - 
-                        current_appearance['start_frame'] + 1
-                    ) / fps
-                    logo_appearances.append(current_appearance)
-                    current_appearance = None
+                frame_detections.append({
+                    'frame_number': frame_count,
+                    'timestamp': frame_count / fps,
+                    'num_logos': len(boxes),
+                    'scores': scores.tolist(),
+                    'boxes': boxes.tolist()
+                })
             
             frame_count += 1
-            
-            # Actualizar progreso cada 30 frames
             if frame_count % 30 == 0:
-                progress = frame_count / total_frames * 100
-                logger.info(f"Procesado: {progress:.1f}%")
+                logger.info(f"Procesado: {(frame_count/total_frames)*100:.1f}%")
         
-        # Cerrar última aparición si existe
-        if current_appearance is not None:
-            current_appearance['end_frame'] = frame_count - 1
-            current_appearance['end_time'] = (frame_count - 1) / fps
-            current_appearance['duration'] = (
-                current_appearance['end_frame'] - 
-                current_appearance['start_frame'] + 1
-            ) / fps
-            logo_appearances.append(current_appearance)
-        
-        # Cerrar video
         cap.release()
         
+        # Procesar las detecciones para agrupar apariciones consecutivas
+        appearances = []
+        current_appearance = None
+        
+        for i, frame_info in enumerate(frame_detections):
+            if current_appearance is None:
+                current_appearance = {
+                    'start_frame': frame_info['frame_number'],
+                    'start_time': frame_info['timestamp'],
+                    'max_logos': frame_info['num_logos'],
+                    'frames_info': [frame_info]
+                }
+            else:
+                # Si es el frame siguiente en la secuencia
+                if frame_info['frame_number'] - current_appearance['frames_info'][-1]['frame_number'] <= 2:
+                    current_appearance['frames_info'].append(frame_info)
+                    current_appearance['max_logos'] = max(
+                        current_appearance['max_logos'],
+                        frame_info['num_logos']
+                    )
+                else:
+                    # Finalizar aparición actual
+                    end_frame = current_appearance['frames_info'][-1]
+                    current_appearance['end_frame'] = end_frame['frame_number']
+                    current_appearance['end_time'] = end_frame['timestamp']
+                    current_appearance['duration'] = (
+                        current_appearance['end_time'] - 
+                        current_appearance['start_time']
+                    )
+                    appearances.append(current_appearance)
+                    
+                    # Iniciar nueva aparición
+                    current_appearance = {
+                        'start_frame': frame_info['frame_number'],
+                        'start_time': frame_info['timestamp'],
+                        'max_logos': frame_info['num_logos'],
+                        'frames_info': [frame_info]
+                    }
+        
+        # Añadir última aparición si existe
+        if current_appearance is not None:
+            end_frame = current_appearance['frames_info'][-1]
+            current_appearance['end_frame'] = end_frame['frame_number']
+            current_appearance['end_time'] = end_frame['timestamp']
+            current_appearance['duration'] = (
+                current_appearance['end_time'] - 
+                current_appearance['start_time']
+            )
+            appearances.append(current_appearance)
+        
         # Calcular estadísticas
-        total_logo_time = sum(app['duration'] for app in logo_appearances)
+        total_logo_time = sum(app['duration'] for app in appearances)
+        max_logos_in_frame = max(app['max_logos'] for app in appearances) if appearances else 0
         
         return {
             'total_frames': total_frames,
@@ -118,7 +141,16 @@ class LogoDetector:
             'video_duration': duration,
             'total_logo_time': total_logo_time,
             'logo_percentage': (total_logo_time / duration) * 100,
-            'appearances': logo_appearances
+            'max_logos_in_frame': max_logos_in_frame,
+            'appearances': [
+                {
+                    'start_time': app['start_time'],
+                    'end_time': app['end_time'],
+                    'duration': app['duration'],
+                    'max_logos': app['max_logos']
+                }
+                for app in appearances
+            ]
         }
 
     def format_time(self, seconds: float) -> str:

@@ -8,15 +8,87 @@ import logging
 import sys
 import os
 import tempfile
+from datetime import timedelta
 
-# Get the project root directory (one level up from this file)
+# Get the project root directory
 current_dir = Path(__file__).parent.parent
 sys.path.append(str(current_dir))
 
+from src.training.train_model import train_model
 from src.inference.detect_logos import LogoDetector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def format_time(seconds):
+    """Formato tiempo en HH:MM:SS"""
+    return str(timedelta(seconds=int(seconds)))
+
+def process_video_frames(video_path, detector, conf_threshold=0.25):
+    """
+    Procesa el video frame por frame y detecta logos
+    Returns:
+        dict con estadísticas y detecciones
+    """
+    cap = cv2.VideoCapture(video_path)
+    
+    # Obtener propiedades del video
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps
+    
+    # Variables para seguimiento
+    frame_count = 0
+    logo_frames = 0
+    frame_detections = []  # Lista para guardar detecciones por frame
+    progress_bar = st.progress(0)
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # Convertir frame a RGB y formato PIL
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_pil = Image.fromarray(frame_rgb)
+        
+        # Detectar logos en el frame
+        boxes, scores, labels = detector.detect(frame_pil, conf_threshold)
+        
+        if len(boxes) > 0:
+            logo_frames += 1
+            frame_detections.append({
+                'frame_number': frame_count,
+                'timestamp': frame_count / fps,
+                'num_logos': len(boxes),
+                'boxes': boxes.tolist(),
+                'scores': scores.tolist()
+            })
+        
+        # Actualizar progreso
+        if frame_count % 30 == 0:  # Actualizar cada 30 frames
+            progress = frame_count / total_frames
+            progress_bar.progress(progress)
+        
+        frame_count += 1
+    
+    cap.release()
+    progress_bar.empty()
+    
+    # Procesar estadísticas
+    total_detections = sum(frame['num_logos'] for frame in frame_detections)
+    avg_logos_per_frame = total_detections / logo_frames if logo_frames > 0 else 0
+    
+    return {
+        'total_frames': total_frames,
+        'logo_frames': logo_frames,
+        'fps': fps,
+        'duration': duration,
+        'logo_percentage': (logo_frames / total_frames) * 100,
+        'frame_detections': frame_detections,
+        'total_detections': total_detections,
+        'avg_logos_per_frame': avg_logos_per_frame
+    }
 
 def main():
     st.set_page_config(page_title="Nike Logo Detector", layout="wide")
@@ -155,44 +227,65 @@ data/
             
             if uploaded_file is not None:
                 try:
-                    # Create temporary file
+                    # Crear archivo temporal
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
                         tmp_file.write(uploaded_file.read())
                         video_path = tmp_file.name
                     
                     if st.button("Analyze Video"):
                         with st.spinner("Processing video..."):
-                            # Process video
-                            results = detector.process_video(
+                            # Procesar video
+                            results = process_video_frames(
                                 video_path,
+                                detector,
                                 conf_threshold=confidence_threshold
                             )
                             
-                            # Display results
+                            # Mostrar resultados
                             st.subheader("Video Analysis Results")
                             
-                            # Main metrics
+                            # Métricas principales
                             col1, col2, col3 = st.columns(3)
                             with col1:
                                 st.metric("Video Duration", 
-                                         detector.format_time(results['video_duration']))
+                                         format_time(results['duration']))
                             with col2:
-                                st.metric("Total Logo Time", 
-                                         detector.format_time(results['total_logo_time']))
+                                st.metric("Frames with Logos", 
+                                         f"{results['logo_frames']} / {results['total_frames']}")
                             with col3:
                                 st.metric("Logo Presence", 
                                          f"{results['logo_percentage']:.1f}%")
                             
-                            # Detailed appearances
-                            st.subheader("Logo Appearances")
-                            for i, app in enumerate(results['appearances'], 1):
-                                with st.expander(f"Appearance {i}"):
-                                    st.write(f"Start: {detector.format_time(app['start_time'])}")
-                                    st.write(f"End: {detector.format_time(app['end_time'])}")
-                                    st.write(f"Duration: {detector.format_time(app['duration'])}")
-                                    st.write(f"Logos detected: {app['detections']}")
+                            # Estadísticas adicionales
+                            st.subheader("Detection Statistics")
+                            st.write(f"Total logo detections: {results['total_detections']}")
+                            st.write(f"Average logos per frame: {results['avg_logos_per_frame']:.2f}")
+                            
+                            # Gráfico de detecciones a lo largo del tiempo
+                            if len(results['frame_detections']) > 0:
+                                st.subheader("Logo Detections Timeline")
+                                timeline_data = [
+                                    {"time": format_time(det['timestamp']), 
+                                     "logos": det['num_logos']} 
+                                    for det in results['frame_detections']
+                                ]
+                                st.line_chart(
+                                    data=timeline_data,
+                                    x="time",
+                                    y="logos"
+                                )
+                            
+                            # Detalles por frame
+                            st.subheader("Detailed Detections")
+                            for det in results['frame_detections']:
+                                with st.expander(
+                                    f"Time {format_time(det['timestamp'])} - {det['num_logos']} logos"):
+                                    st.write(f"Frame number: {det['frame_number']}")
+                                    st.write(f"Number of logos: {det['num_logos']}")
+                                    for i, (box, score) in enumerate(zip(det['boxes'], det['scores'])):
+                                        st.write(f"Logo {i+1}: Confidence = {score:.2f}")
                     
-                    # Clean up
+                    # Limpiar archivo temporal
                     os.unlink(video_path)
                     
                 except Exception as e:
