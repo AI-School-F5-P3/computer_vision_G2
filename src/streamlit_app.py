@@ -1,296 +1,324 @@
-# src/streamlit_app.py
 import streamlit as st
-from PIL import Image
-import cv2
-import numpy as np
 from pathlib import Path
 import logging
-import sys
-import os
-import tempfile
 from datetime import timedelta
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw
+from inference.video_processor import VideoProcessor
+from storage.detection_storage import DetectionStorage
+from inference.detect_logos import LogoDetector
+from training.train_model import train_model
+from config import *
+import pandas as pd
 
-# Get the project root directory
-current_dir = Path(__file__).parent.parent
-sys.path.append(str(current_dir))
-
-from src.training.train_model import train_model
-from src.inference.detect_logos import LogoDetector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def format_time(seconds):
-    """Formato tiempo en HH:MM:SS"""
+    """Format seconds to HH:MM:SS"""
     return str(timedelta(seconds=int(seconds)))
 
-def process_video_frames(video_path, detector, conf_threshold=0.25):
-    """
-    Procesa el video frame por frame y detecta logos
-    Returns:
-        dict con estadísticas y detecciones
-    """
-    cap = cv2.VideoCapture(video_path)
+def process_image(image, detector, confidence_threshold):
+    """Process a single image and return detections"""
+    boxes, scores, labels = detector.detect(image, conf_threshold=confidence_threshold)
     
-    # Obtener propiedades del video
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps
+    # Convert numpy array to PIL Image if necessary
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     
-    # Variables para seguimiento
-    frame_count = 0
-    logo_frames = 0
-    frame_detections = []  # Lista para guardar detecciones por frame
-    progress_bar = st.progress(0)
+    # Draw boxes on image
+    img_draw = image.copy()
+    draw = ImageDraw.Draw(img_draw)
     
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        # Convertir frame a RGB y formato PIL
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_pil = Image.fromarray(frame_rgb)
+    detections = []
+    for box, score, label in zip(boxes, scores, labels):
+        x1, y1, x2, y2 = map(int, box)
+        class_name = BRAND_CLASSES[int(label)]
         
-        # Detectar logos en el frame
-        boxes, scores, labels = detector.detect(frame_pil, conf_threshold)
+        # Draw rectangle
+        draw.rectangle([x1, y1, x2, y2], outline='red', width=2)
+        # Draw label
+        draw.text((x1, y1-10), f'{class_name}: {score:.2f}', fill='red')
         
-        if len(boxes) > 0:
-            logo_frames += 1
-            frame_detections.append({
-                'frame_number': frame_count,
-                'timestamp': frame_count / fps,
-                'num_logos': len(boxes),
-                'boxes': boxes.tolist(),
-                'scores': scores.tolist()
-            })
-        
-        # Actualizar progreso
-        if frame_count % 30 == 0:  # Actualizar cada 30 frames
-            progress = frame_count / total_frames
-            progress_bar.progress(progress)
-        
-        frame_count += 1
+        detections.append({
+            'class': class_name,
+            'confidence': float(score),
+            'box': box.tolist()
+        })
     
-    cap.release()
-    progress_bar.empty()
-    
-    # Procesar estadísticas
-    total_detections = sum(frame['num_logos'] for frame in frame_detections)
-    avg_logos_per_frame = total_detections / logo_frames if logo_frames > 0 else 0
-    
-    return {
-        'total_frames': total_frames,
-        'logo_frames': logo_frames,
-        'fps': fps,
-        'duration': duration,
-        'logo_percentage': (logo_frames / total_frames) * 100,
-        'frame_detections': frame_detections,
-        'total_detections': total_detections,
-        'avg_logos_per_frame': avg_logos_per_frame
-    }
+    return img_draw, detections
 
 def main():
-    st.set_page_config(page_title="Nike Logo Detector", layout="wide")
+    st.set_page_config(page_title="Logo Detection System", layout="wide")
     
-    st.title("Nike Logo Detector")
+    st.title("Logo Detection System")
     
-    # Sidebar
-    st.sidebar.header("Configuration")
-    page = st.sidebar.radio("Select Page", ["Train Model", "Detect Logos"])
+    # Sidebar for mode selection and confidence threshold
+    mode = st.sidebar.selectbox(
+        "Select Mode",
+        ["Detection", "Training"]
+    )
     
-    # Get project root directory
-    project_root = Path(__file__).parent.parent
+    # Add confidence threshold slider to sidebar
+    confidence_threshold = st.sidebar.slider(
+        "Confidence Threshold",
+        min_value=0.0,
+        max_value=1.0,
+        value=CONFIDENCE_THRESHOLD,
+        step=0.05,
+        help="Adjust the confidence threshold for logo detection"
+    )
     
-    # Initialize detector
-    @st.cache_resource
-    def load_detector():
-        model_path = project_root / "runs" / "detect" / "train7" / "best.pt"
-        return LogoDetector(model_path if model_path.exists() else None)
-    
-    try:
-        detector = load_detector()
-    except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
-        detector = LogoDetector()  # Initialize without model
-    
-    if page == "Train Model":
-        st.header("Train Model")
+    if mode == "Detection":
+        # Initialize components
+        storage = DetectionStorage(DB_PATH, SAVE_DIR)
         
-        # Check if data directory exists and has required structure
-        data_path = project_root / 'data'
-        if not data_path.exists():
-            st.error(f"Data directory not found at {data_path}")
-            return
-            
-        required_dirs = ['train/images', 'valid/images', 'test/images']
-        missing_dirs = []
-        for dir_path in required_dirs:
-            if not (data_path / dir_path).exists():
-                missing_dirs.append(dir_path)
-                
-        if missing_dirs:
-            st.error(f"Missing required directories: {', '.join(missing_dirs)}")
-            st.write("Please ensure your data directory has the following structure:")
-            st.code("""
-data/
-├── train/
-│   └── images/
-├── valid/
-│   └── images/
-└── test/
-    └── images/
-            """)
+        @st.cache_resource
+        def load_detector():
+            return LogoDetector(MODEL_PATH if Path(MODEL_PATH).exists() else None)
+        
+        try:
+            detector = load_detector()
+            processor = VideoProcessor(detector.model, storage, SAVE_DIR)
+        except Exception as e:
+            st.error(f"Error initializing system: {str(e)}")
             return
         
-        # Training parameters
-        epochs = st.number_input("Number of Epochs", min_value=1, value=10)
-        batch_size = st.number_input("Batch Size", min_value=1, value=16)
+        # Detection type selection
+        detection_type = st.radio("Select Detection Type", ["Image", "Video"])
         
-        # Training button
-        if st.button("Start Training"):
-            try:
-                with st.spinner("Training model... This may take a while."):
-                    model_path = train_model(
-                        data_path='data',  # Use relative path
-                        num_epochs=epochs,
-                        batch_size=batch_size
-                    )
-                st.success(f"Training completed! Model saved at {model_path}")
-                # Reload the detector with new model
-                detector = load_detector()
-            except Exception as e:
-                st.error(f"Training error: {str(e)}")
-                logger.error(f"Training error: {str(e)}", exc_info=True)
-    
-    else:  # Detect Logos page
-        st.header("Detect Logos")
-        
-        # Mode selection
-        mode = st.radio("Select Detection Mode", ["Image", "Video"])
-        
-        confidence_threshold = st.slider(
-            "Confidence Threshold", 
-            min_value=0.0, 
-            max_value=1.0, 
-            value=0.25,
-            step=0.05
-        )
-        
-        if mode == "Image":
+        if detection_type == "Image":
             uploaded_file = st.file_uploader(
-                "Choose an image file", 
-                type=['png', 'jpg', 'jpeg']
+                "Choose an image file",
+                type=['jpg', 'jpeg', 'png']
             )
             
-            if uploaded_file is not None:
+            if uploaded_file:
                 try:
-                    # Display original image
+                    # Read and process image
                     image = Image.open(uploaded_file)
-                    st.image(image, caption="Uploaded Image", use_column_width=True)
                     
-                    if st.button("Detect Logos"):
-                        with st.spinner("Performing detection..."):
-                            boxes, scores, labels = detector.detect(
-                                image, 
-                                conf_threshold=confidence_threshold
-                            )
-                            
-                            if len(boxes) > 0:
-                                # Draw detections
-                                img_array = np.array(image)
-                                for box, score in zip(boxes, scores):
-                                    x1, y1, x2, y2 = map(int, box)
-                                    cv2.rectangle(img_array, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                    cv2.putText(img_array, f'Nike: {score:.2f}', 
-                                              (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                                              0.9, (0, 255, 0), 2)
-                                
-                                st.image(img_array, caption="Detection Results", use_column_width=True)
-                                
-                                # Statistics
-                                st.write(f"Found {len(boxes)} Nike logo(s)")
-                                for i, score in enumerate(scores, 1):
-                                    st.write(f"Detection {i}: Confidence = {score:.2%}")
-                            else:
-                                st.info("No Nike logos detected in the image.")
-                
+                    # Create columns for original and processed images
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("Original Image")
+                        st.image(image)
+                    
+                    with col2:
+                        st.subheader("Detected Logos")
+                        processed_image, detections = process_image(
+                            image, 
+                            detector,
+                            confidence_threshold=confidence_threshold  # Use slider value
+                        )
+                        st.image(processed_image)
+                    
+                    # Show detections
+                    if detections:
+                        st.subheader("Detection Results")
+                        for det in detections:
+                            st.write(f"Found {det['class']} with {det['confidence']:.2f} confidence")
+                    else:
+                        st.info("No logos detected in the image")
+                        
                 except Exception as e:
                     st.error(f"Error processing image: {str(e)}")
                     logger.error(f"Processing error: {str(e)}", exc_info=True)
-                    
-        else:  # Video mode
+        
+        else:  # Video processing
             uploaded_file = st.file_uploader(
                 "Choose a video file",
                 type=['mp4', 'avi', 'mov']
             )
             
-            if uploaded_file is not None:
+            if uploaded_file:
                 try:
-                    # Crear archivo temporal
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-                        tmp_file.write(uploaded_file.read())
-                        video_path = tmp_file.name
+                    # Create a single progress bar
+                    progress_bar = st.progress(0)
+                    video_placeholder = st.empty()
                     
-                    if st.button("Analyze Video"):
-                        with st.spinner("Processing video..."):
-                            # Procesar video
-                            results = process_video_frames(
-                                video_path,
-                                detector,
-                                conf_threshold=confidence_threshold
-                            )
-                            
-                            # Mostrar resultados
-                            st.subheader("Video Analysis Results")
-                            
-                            # Métricas principales
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Video Duration", 
-                                         format_time(results['duration']))
-                            with col2:
-                                st.metric("Frames with Logos", 
-                                         f"{results['logo_frames']} / {results['total_frames']}")
-                            with col3:
-                                st.metric("Logo Presence", 
-                                         f"{results['logo_percentage']:.1f}%")
-                            
-                            # Estadísticas adicionales
-                            st.subheader("Detection Statistics")
-                            st.write(f"Total logo detections: {results['total_detections']}")
-                            st.write(f"Average logos per frame: {results['avg_logos_per_frame']:.2f}")
-                            
-                            # Gráfico de detecciones a lo largo del tiempo
-                            if len(results['frame_detections']) > 0:
-                                st.subheader("Logo Detections Timeline")
-                                timeline_data = [
-                                    {"time": format_time(det['timestamp']), 
-                                     "logos": det['num_logos']} 
-                                    for det in results['frame_detections']
-                                ]
-                                st.line_chart(
-                                    data=timeline_data,
-                                    x="time",
-                                    y="logos"
-                                )
-                            
-                            # Detalles por frame
-                            st.subheader("Detailed Detections")
-                            for det in results['frame_detections']:
-                                with st.expander(
-                                    f"Time {format_time(det['timestamp'])} - {det['num_logos']} logos"):
-                                    st.write(f"Frame number: {det['frame_number']}")
-                                    st.write(f"Number of logos: {det['num_logos']}")
-                                    for i, (box, score) in enumerate(zip(det['boxes'], det['scores'])):
-                                        st.write(f"Logo {i+1}: Confidence = {score:.2f}")
+                    def update_progress(frame_idx, total_frames):
+                        """Callback to update progress bar"""
+                        progress = int((frame_idx / total_frames) * 100)
+                        progress_bar.progress(progress)
                     
-                    # Limpiar archivo temporal
-                    os.unlink(video_path)
-                    
+                    with st.spinner("Processing video..."):
+                        stats = processor.process_video(
+                            uploaded_file,
+                            confidence_threshold=confidence_threshold,  # Use slider value
+                            display_callback=video_placeholder.image,
+                            progress_callback=update_progress  # Add progress callback
+                        )
+                        
+                        # Clear progress bar after completion
+                        progress_bar.empty()
+                        
+                        # Display results
+                        st.success("Video processing complete!")
+                        
+                        # Summary metrics
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Video Duration", format_time(stats['duration']))
+                        with col2:
+                            st.metric("Frames with Logos", 
+                                     f"{stats['frames_with_logos']}/{stats['total_frames']}")
+                        with col3:
+                            st.metric("Logo Presence", 
+                                     f"{stats['logo_percentage']:.1f}%")
+                        
+                        # Detection visualization
+                        if stats['detections']:
+                            st.subheader("Detection Analysis")
+                            
+                            # Create DataFrame for better visualization
+                            df = pd.DataFrame(stats['detections'])
+                            
+                            # Confidence over time plot
+                            st.subheader("Confidence Over Time")
+                            fig_conf = {
+                                'data': [{
+                                    'x': df['timestamp'],
+                                    'y': df['confidence'],
+                                    'mode': 'lines+markers',
+                                    'name': 'Confidence'
+                                }],
+                                'layout': {
+                                    'xaxis': {'title': 'Time (seconds)'},
+                                    'yaxis': {'title': 'Confidence Score'}
+                                }
+                            }
+                            st.plotly_chart(fig_conf)
+                            
+                            # Brand distribution
+                            st.subheader("Brand Distribution")
+                            brand_counts = df['class_name'].value_counts()
+                            st.bar_chart(brand_counts)
+                        
+                        # Database section
+                        st.subheader("Database Management")
+                        if st.button("View All Detections"):
+                            with sqlite3.connect(DB_PATH) as conn:
+                                df = pd.read_sql_query("""
+                                    SELECT v.filename, v.processed_date, 
+                                           d.class_name, d.confidence, d.timestamp
+                                    FROM videos v
+                                    JOIN detections d ON v.id = d.video_id
+                                    ORDER BY v.processed_date DESC
+                                """, conn)
+                                st.dataframe(df)
+                        
+                        if st.button("Clear Database"):
+                            if st.confirm("Are you sure you want to clear all detection data?"):
+                                with sqlite3.connect(DB_PATH) as conn:
+                                    conn.execute("DELETE FROM detections")
+                                    conn.execute("DELETE FROM videos")
+                                st.success("Database cleared successfully!")
+                
                 except Exception as e:
                     st.error(f"Error processing video: {str(e)}")
-                    logger.error(f"Video processing error: {str(e)}", exc_info=True)
+                    logger.error(f"Processing error: {str(e)}", exc_info=True)
+    
+    else:  # Training mode
+        st.subheader("Model Training")
+        
+        # Training parameters
+        col1, col2 = st.columns(2)
+        with col1:
+            n_epochs = st.number_input("Number of epochs", min_value=1, value=50)
+            optimize = st.checkbox("Perform hyperparameter optimization")
+        
+        with col2:
+            if optimize:
+                n_trials = st.number_input("Number of optimization trials", min_value=1, value=20)
+            else:
+                n_trials = 20
+        
+        if st.button("Start Training"):
+            try:
+                with st.spinner("Training model... This may take a while."):
+                    model_path = train_model(
+                        optimize=optimize,
+                        n_trials=n_trials,
+                        final_epochs=n_epochs
+                    )
+                    st.success(f"Training completed! Model saved at: {model_path}")
+                    
+                    # Provide option to use newly trained model
+                    if st.button("Use New Model"):
+                        st.experimental_rerun()
+                        
+            except Exception as e:
+                st.error(f"Error during training: {str(e)}")
+                logger.error(f"Training error: {str(e)}", exc_info=True)
+
+def add_database_management():
+    st.subheader("Database Management")
+    
+    # View data
+    if st.button("View Detection History"):
+        with sqlite3.connect(DB_PATH) as conn:
+            # Get video statistics
+            videos_df = pd.read_sql_query("""
+                SELECT filename, processed_date, duration, 
+                       total_frames, logo_percentage
+                FROM videos
+                ORDER BY processed_date DESC
+            """, conn)
+            
+            if not videos_df.empty:
+                st.write("Processed Videos:")
+                st.dataframe(videos_df)
+                
+                # Get detection counts
+                detections_df = pd.read_sql_query("""
+                    SELECT v.filename, 
+                           COUNT(*) as detection_count,
+                           GROUP_CONCAT(DISTINCT d.class_name) as detected_brands
+                    FROM videos v
+                    JOIN detections d ON v.id = d.video_id
+                    GROUP BY v.filename
+                """, conn)
+                
+                st.write("Detection Summary:")
+                st.dataframe(detections_df)
+            else:
+                st.info("No data in database")
+    
+    # Delete options
+    with st.expander("Delete Data"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("Clear All Data"):
+                if st.checkbox("I understand this will delete all data"):
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("DELETE FROM detections")
+                        conn.execute("DELETE FROM videos")
+                        conn.execute("VACUUM")  # Reclaim disk space
+                    
+                    # Delete saved images
+                    for file in SAVE_DIR.glob("*"):
+                        file.unlink()
+                    
+                    st.success("Database and saved images cleared!")
+        
+        with col2:
+            if st.button("Clear Old Data (>30 days)"):
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute("""
+                        DELETE FROM detections 
+                        WHERE video_id IN (
+                            SELECT id FROM videos 
+                            WHERE julianday('now') - julianday(processed_date) > 30
+                        )
+                    """)
+                    conn.execute("DELETE FROM videos WHERE julianday('now') - julianday(processed_date) > 30")
+                    conn.execute("VACUUM")
+                st.success("Old data cleared!")
 
 if __name__ == "__main__":
     main()
