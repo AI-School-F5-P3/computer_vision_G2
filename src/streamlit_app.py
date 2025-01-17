@@ -53,67 +53,119 @@ def process_image(image, detector, confidence_threshold):
 def add_database_management():
     st.subheader("Database Management")
     
-    # View data
-    if st.button("View Detection History"):
-        with sqlite3.connect(DB_PATH) as conn:
-            # Get video statistics
-            videos_df = pd.read_sql_query("""
-                SELECT filename, processed_date, duration, 
-                       total_frames, logo_percentage
-                FROM videos
-                ORDER BY processed_date DESC
+    # Move the database viewing logic outside of the button
+    # This way it won't reprocess the video
+    with sqlite3.connect(DB_PATH) as conn:
+        # Get video statistics
+        videos_df = pd.read_sql_query("""
+            SELECT filename, processed_date, duration, 
+                   total_frames, logo_percentage
+            FROM videos
+            ORDER BY processed_date DESC
+        """, conn)
+        
+        if not videos_df.empty:
+            st.write("Processed Videos:")
+            st.dataframe(videos_df)
+            
+            # Get detection counts
+            detections_df = pd.read_sql_query("""
+                SELECT v.filename, 
+                       COUNT(*) as detection_count,
+                       GROUP_CONCAT(DISTINCT d.class_name) as detected_brands
+                FROM videos v
+                JOIN detections d ON v.id = d.video_id
+                GROUP BY v.filename
             """, conn)
             
-            if not videos_df.empty:
-                st.write("Processed Videos:")
-                st.dataframe(videos_df)
-                
-                # Get detection counts
-                detections_df = pd.read_sql_query("""
-                    SELECT v.filename, 
-                           COUNT(*) as detection_count,
-                           GROUP_CONCAT(DISTINCT d.class_name) as detected_brands
-                    FROM videos v
-                    JOIN detections d ON v.id = d.video_id
-                    GROUP BY v.filename
-                """, conn)
-                
-                st.write("Detection Summary:")
-                st.dataframe(detections_df)
-            else:
-                st.info("No data in database")
+            st.write("Detection Summary:")
+            st.dataframe(detections_df)
+        else:
+            st.info("No data in database")
     
     # Delete options
     with st.expander("Delete Data"):
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("Clear All Data"):
-                if st.checkbox("I understand this will delete all data"):
-                    with sqlite3.connect(DB_PATH) as conn:
-                        conn.execute("DELETE FROM detections")
-                        conn.execute("DELETE FROM videos")
-                        conn.execute("VACUUM")  # Reclaim disk space
-                    
-                    # Delete saved images
-                    for file in SAVE_DIR.glob("*"):
-                        file.unlink()
-                    
-                    st.success("Database and saved images cleared!")
+            # Add a key to the checkbox to ensure proper state management
+            if st.button("Clear All Data", key="clear_all"):
+                confirm = st.checkbox("I understand this will delete all data", key="confirm_clear_all")
+                if confirm:
+                    try:
+                        with sqlite3.connect(DB_PATH) as conn:
+                            # Create a cursor
+                            cursor = conn.cursor()
+                            # Delete all records from both tables
+                            cursor.execute("DELETE FROM detections")
+                            cursor.execute("DELETE FROM videos")
+                            # Commit the changes
+                            conn.commit()
+                            # Reclaim disk space
+                            cursor.execute("VACUUM")
+                        
+                        # Delete saved images
+                        save_dir = Path(SAVE_DIR)
+                        if save_dir.exists():
+                            for file in save_dir.glob("*"):
+                                try:
+                                    file.unlink()
+                                except Exception as e:
+                                    logger.error(f"Error deleting file {file}: {e}")
+                        
+                        st.success("Database and saved images cleared!")
+                        # Force refresh the page to show updated data
+                        st.experimental_rerun()
+                    except Exception as e:
+                        st.error(f"Error clearing database: {e}")
+                        logger.error(f"Database clearing error: {e}", exc_info=True)
         
         with col2:
-            if st.button("Clear Old Data (>30 days)"):
-                with sqlite3.connect(DB_PATH) as conn:
-                    conn.execute("""
-                        DELETE FROM detections 
-                        WHERE video_id IN (
+            if st.button("Clear Old Data (>30 days)", key="clear_old"):
+                try:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        cursor = conn.cursor()
+                        # First get the IDs of old videos
+                        cursor.execute("""
                             SELECT id FROM videos 
                             WHERE julianday('now') - julianday(processed_date) > 30
-                        )
-                    """)
-                    conn.execute("DELETE FROM videos WHERE julianday('now') - julianday(processed_date) > 30")
-                    conn.execute("VACUUM")
-                st.success("Old data cleared!")
+                        """)
+                        old_video_ids = [row[0] for row in cursor.fetchall()]
+                        
+                        # Delete related detections first (due to foreign key constraint)
+                        cursor.execute("""
+                            DELETE FROM detections 
+                            WHERE video_id IN (
+                                SELECT id FROM videos 
+                                WHERE julianday('now') - julianday(processed_date) > 30
+                            )
+                        """)
+                        
+                        # Then delete old videos
+                        cursor.execute("""
+                            DELETE FROM videos 
+                            WHERE julianday('now') - julianday(processed_date) > 30
+                        """)
+                        
+                        # Commit and reclaim space
+                        conn.commit()
+                        cursor.execute("VACUUM")
+                        
+                        # Delete associated files
+                        for video_id in old_video_ids:
+                            file_pattern = f"{video_id}_*"
+                            for file in Path(SAVE_DIR).glob(file_pattern):
+                                try:
+                                    file.unlink()
+                                except Exception as e:
+                                    logger.error(f"Error deleting file {file}: {e}")
+                        
+                        st.success("Old data cleared!")
+                        # Force refresh the page to show updated data
+                        st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error clearing old data: {e}")
+                    logger.error(f"Database clearing error: {e}", exc_info=True)
 
 def main():
     st.set_page_config(page_title="Logo Detection System", layout="wide")
