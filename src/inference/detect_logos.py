@@ -6,6 +6,14 @@ import cv2
 import os
 import logging
 from datetime import timedelta
+import sqlite3
+import torch
+from torchvision.transforms import functional as F
+from config import *
+# Aquí van las clases:
+# - DetectionVisualizer
+# - DetectionStorage
+# - VideoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -156,3 +164,222 @@ class LogoDetector:
     def format_time(self, seconds: float) -> str:
         """Format seconds to HH:MM:SS"""
         return str(timedelta(seconds=int(seconds)))
+    
+class DetectionVisualizer:
+    def __init__(self, class_names=['nike']):
+        self.class_names = class_names
+        
+    def draw_detections(self, image, boxes, labels, scores=None):
+        """
+        Dibuja los bounding boxes y etiquetas en la imagen
+        Args:
+            image: Imagen numpy array (BGR)
+            boxes: tensor de bounding boxes [x1, y1, x2, y2]
+            labels: tensor de etiquetas de clase
+            scores: tensor de scores de confianza (opcional)
+        """
+        image_copy = image.copy()
+        
+        if isinstance(boxes, torch.Tensor):
+            boxes = boxes.cpu().numpy()
+        if isinstance(labels, torch.Tensor):
+            labels = labels.cpu().numpy()
+        if scores is not None and isinstance(scores, torch.Tensor):
+            scores = scores.cpu().numpy()
+            
+        for idx, (box, label) in enumerate(zip(boxes, labels)):
+            x1, y1, x2, y2 = map(int, box)
+            
+            # Dibujar bounding box
+            cv2.rectangle(image_copy, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            # Preparar texto con clase y score
+            text = self.class_names[label]
+            if scores is not None:
+                text += f" {scores[idx]:.2f}"
+                
+            # Calcular posición del texto (debajo del bbox)
+            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+            text_x = x1
+            text_y = y2 + text_size[1] + 5
+            
+            # Dibujar fondo para el texto
+            cv2.rectangle(image_copy, 
+                        (text_x, text_y - text_size[1] - 5),
+                        (text_x + text_size[0], text_y + 5),
+                        (0, 255, 0), 
+                        -1)
+            
+            # Dibujar texto
+            cv2.putText(image_copy, 
+                       text,
+                       (text_x, text_y),
+                       cv2.FONT_HERSHEY_SIMPLEX,
+                       0.7,
+                       (0, 0, 0),
+                       2)
+            
+        return image_copy
+    
+class DetectionStorage:
+    def __init__(self, db_path, saves_dir):
+        self.db_path = db_path
+        self.saves_dir = saves_dir
+        os.makedirs(saves_dir, exist_ok=True)
+        self.init_db()
+        
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        # Crear tablas si no existen
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file TEXT,
+                class_name TEXT,
+                confidence REAL,
+                timestamp DATETIME,
+                bbox_image_path TEXT,
+                x1 REAL,
+                y1 REAL,
+                x2 REAL,
+                y2 REAL
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        
+    def save_detection(self, image, box, class_name, score, source_file, frame_number=None):
+        """
+        Guarda una detección individual
+        """
+        # Crear nombre único para la imagen recortada
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if frame_number is not None:
+            image_filename = f"{timestamp}_frame{frame_number}_{class_name}.jpg"
+        else:
+            image_filename = f"{timestamp}_{class_name}.jpg"
+        
+        image_path = os.path.join(self.saves_dir, image_filename)
+        
+        # Recortar y guardar la imagen del bbox
+        x1, y1, x2, y2 = map(int, box)
+        cropped_image = image[y1:y2, x1:x2]
+        cv2.imwrite(image_path, cropped_image)
+        
+        # Guardar información en la base de datos
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        c.execute('''
+            INSERT INTO detections 
+            (source_file, class_name, confidence, timestamp, bbox_image_path, x1, y1, x2, y2)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            source_file,
+            class_name,
+            float(score) if score is not None else None,
+            timestamp,
+            image_path,
+            float(x1),
+            float(y1),
+            float(x2),
+            float(y2)
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+class VideoProcessor:
+    def __init__(self, model, visualizer, storage, device='cuda'):
+        self.model = model
+        self.visualizer = visualizer
+        self.storage = storage
+        self.device = device
+        self.model.to(device)
+        self.model.eval()
+        
+    def process_frame(self, frame):
+        """Procesa un frame individual"""
+        # Preparar imagen para el modelo
+        image_tensor = F.to_tensor(frame).to(self.device)
+        image_tensor = image_tensor.unsqueeze(0)
+        
+        with torch.no_grad():
+            predictions = self.model(image_tensor)
+            
+        # Obtener predicciones
+        boxes = predictions[0]['boxes']
+        labels = predictions[0]['labels']
+        scores = predictions[0]['scores']
+        
+        # Filtrar por umbral de confianza
+        mask = scores > 0.5
+        boxes = boxes[mask]
+        labels = labels[mask]
+        scores = scores[mask]
+        
+        # Dibujar detecciones
+        frame_with_detections = self.visualizer.draw_detections(
+            frame, boxes, labels, scores
+        )
+        
+        return frame_with_detections, boxes, labels, scores
+    
+    def process_video(self, video_path):
+        """Procesa un video completo"""
+        cap = cv2.VideoCapture(video_path)
+        
+        # Configurar writer para guardar el video procesado
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        
+        output_path = video_path.rsplit('.', 1)[0] + '_processed.mp4'
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+        
+        frame_count = 0
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            # Procesar frame
+            frame_with_detections, boxes, labels, scores = self.process_frame(frame)
+            
+            # Guardar detecciones
+            for box, label, score in zip(boxes, labels, scores):
+                self.storage.save_detection(
+                    frame,
+                    box.cpu().numpy(),
+                    self.visualizer.class_names[label],
+                    score.item(),
+                    video_path,
+                    frame_count
+                )
+            
+            # Mostrar y guardar frame procesado
+            cv2.imshow('Processed Video', frame_with_detections)
+            out.write(frame_with_detections)
+            
+            frame_count += 1
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
+        
+# Opcional: main solo para pruebas locales
+def main():
+    # Este main() solo se usaría para pruebas locales
+    # El video_path real vendrá del frontend
+    pass
+
+if __name__ == "__main__":
+    main()
