@@ -328,8 +328,13 @@ class VideoProcessor:
         
         return frame_with_detections, boxes, labels, scores
     
-    def process_video(self, video_path):
-        """Procesa un video completo"""
+    def process_video(self, video_path, stframe):
+        """
+        Procesa un video completo y muestra los frames en Streamlit
+        Args:
+            video_path: ruta al video
+            stframe: st.image() object de Streamlit para mostrar los frames
+        """
         cap = cv2.VideoCapture(video_path)
         
         # Configurar writer para guardar el video procesado
@@ -362,18 +367,17 @@ class VideoProcessor:
                     frame_count
                 )
             
-            # Mostrar y guardar frame procesado
-            cv2.imshow('Processed Video', frame_with_detections)
+            # Mostrar frame en Streamlit
+            frame_rgb = cv2.cvtColor(frame_with_detections, cv2.COLOR_BGR2RGB)
+            stframe.image(frame_rgb, channels="RGB", use_column_width=True)
+            
+            # Guardar frame procesado
             out.write(frame_with_detections)
             
             frame_count += 1
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
                 
         cap.release()
         out.release()
-        cv2.destroyAllWindows()
         
 # Opcional: main solo para pruebas locales
 def main():
