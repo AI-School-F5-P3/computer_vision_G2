@@ -1,2 +1,2 @@
-# computer_vision_G2
-Proyecto de computer vision para el reconomiento de objetos (logos)
+# computer_vision_carol
+Computer Vision project to detect logos in images and video with YOLO
