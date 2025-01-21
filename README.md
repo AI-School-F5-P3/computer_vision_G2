@@ -51,7 +51,7 @@ pip install -r requirements.txt
 streamlit run src/streamlit_app.py
 ```
 
-![alt text](images/screeshoot2.png)
+![alt text](images/screenshoot2.png)
 ## 📁 Project Structure
 
 ```
@@ -98,7 +98,7 @@ The system supports custom model training:
 3. Configure training parameters (epochs, optimization)
 4. Monitor training progress
 
-![alt text](images/screeshot3.png)
+![alt text](images/screenshot3.png)
 ## 📊 Analytics
 
 The system provides:
