@@ -1,6 +1,6 @@
 # Logo Detection System 🎯
 
-![alt text](image.png)
+![alt text](images/image.png)
 
 A real-time logo detection system built with YOLOv8 and Streamlit, capable of detecting and tracking brand logos in both images and videos. The system includes training capabilities, database management, and analytics visualization.
 
@@ -51,6 +51,7 @@ pip install -r requirements.txt
 streamlit run src/streamlit_app.py
 ```
 
+![alt text](image-1.png)
 ## 📁 Project Structure
 
 ```
@@ -97,6 +98,7 @@ The system supports custom model training:
 3. Configure training parameters (epochs, optimization)
 4. Monitor training progress
 
+![alt text](image.png)
 ## 📊 Analytics
 
 The system provides:
