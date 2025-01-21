@@ -1,6 +1,6 @@
 # Logo Detection System 🎯
 
-![alt text](images/image.png)
+![alt text](images/screeshoot1.png)
 
 A real-time logo detection system built with YOLOv8 and Streamlit, capable of detecting and tracking brand logos in both images and videos. The system includes training capabilities, database management, and analytics visualization.
 
