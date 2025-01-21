@@ -102,12 +102,12 @@ def process_image_detection(uploaded_file, detector, confidence_threshold):
     
     with col1:
         st.subheader("Original Image")
-        st.image(image, use_column_width=True)
+        st.image(image, use_column_width =True)
     
     with col2:
         st.subheader("Detected Logos")
         processed_image, detections = process_image(image, detector, confidence_threshold)
-        st.image(processed_image, use_column_width=True)
+        st.image(processed_image, use_column_width =True)
     
     if detections:
         st.markdown("### Detection Results")
@@ -169,7 +169,7 @@ def show_detection_analytics(stats):
             'margin': {'t': 30}
         }
     }
-    st.plotly_chart(fig_conf, use_container_width=True)
+    st.plotly_chart(fig_conf, use_column_width=True)
     
     st.subheader("Brand Distribution")
     brand_counts = df['class_name'].value_counts()
