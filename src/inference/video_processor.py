@@ -52,7 +52,7 @@ class VideoProcessor:
 
             # Calculate frame skip based on video length
             # Process 2 frames per second for videos longer than 10 seconds
-            if duration > 10:
+            if duration > 7:
                 frame_skip = int(fps / 2)
             else:
                 frame_skip = 1
